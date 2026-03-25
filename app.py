@@ -39,40 +39,26 @@ def get_best_available_model():
     return None
 
 # --- 2. เชื่อมต่อ Google Sheets ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def save_log_to_gsheets(question, answer):
-    try:
-        # 1. อ่านข้อมูลโดยไม่ระบุชื่อ Worksheet (เพื่อให้ระบบเลือกหน้าแรกอัตโนมัติ)
-        # วิธีนี้จะช่วยลดปัญหา 404 หากชื่อ Sheet1 มีการเว้นวรรคหรือพิมพ์ผิด
-        df = conn.read(ttl=0) 
-        
-        # 2. จัดการข้อมูลเก่า (ลบแถวที่ว่างเปล่า)
-        if df is not None:
-            df = df.dropna(how="all")
-        
-        # 3. เตรียมข้อมูลแถวใหม่
-        new_row = pd.DataFrame({
-            "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-            "question": [str(question)],
-            "answer": [str(answer)]
-        })
-        
-        # 4. รวมข้อมูลเข้าด้วยกัน
-        # กรณี Sheet ว่างเปล่า (ไม่มี Header) ให้ใช้ข้อมูลใหม่เป็นตัวตั้งต้น
-        if df is None or df.empty:
-            updated_df = new_row
-        else:
-            # พยายามทำให้หัวข้อคอลัมน์ตรงกันก่อนรวม
-            new_row.columns = df.columns[:3] if len(df.columns) >= 3 else ["timestamp", "question", "answer"]
-            updated_df = pd.concat([df, new_row], ignore_index=True)
-        
-        # 5. อัปเดตกลับไปยัง Google Sheets
-        # ระบุชื่อ worksheet ให้ชัดเจน (ตรวจสอบในไฟล์จริงว่าชื่อ Sheet1 หรือไม่)
-        conn.update(worksheet="Sheet1", data=updated_df)
-        
-    except Exception as e:
-        st.error(f"⚠️ บันทึก Log ไม่สำเร็จ: {e}")
+with st.sidebar:
+    st.header("⚙️ สำหรับผู้ดูแลระบบ")
+    if st.checkbox("เปิดโหมดดู Log"):
+        pwd = st.text_input("รหัสผ่าน", type="password")
+        if pwd == "admin123": # ตั้งรหัสผ่านของคุณตรงนี้
+            if os.path.exists(LOG_FILE):
+                df_log = pd.read_csv(LOG_FILE)
+                st.write("รายการคำถามล่าสุด:")
+                st.dataframe(df_log.tail(10))
+                
+                # ปุ่มดาวน์โหลดไฟล์ Log ทั้งหมด
+                csv_data = df_log.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    label="📥 ดาวน์โหลด Log ทั้งหมด (CSV)",
+                    data=csv_data,
+                    file_name=f"logs_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("ยังไม่มีข้อมูลการบันทึก")
 
 # --- 3. ฟังก์ชันโหลดความรู้ ---
 @st.cache_data
