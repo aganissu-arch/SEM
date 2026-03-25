@@ -43,17 +43,34 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_log_to_gsheets(question, answer):
     try:
-        existing_data = conn.read(worksheet="Sheet1", ttl=0)
-        existing_data = existing_data.dropna(how="all")
+        # 1. อ่านข้อมูลจากหน้าแรก (Index 0) แทนการระบุชื่อ เพื่อป้องกันปัญหาชื่อ Sheet1 ไม่ตรง
+        # หรือจะระบุ worksheet="Sheet1" ก็ได้แต่ต้องมั่นใจว่าใน Google Sheets ชื่อตรงกันเป๊ะ
+        df = conn.read(ttl=0) 
         
+        # 2. จัดการข้อมูลเก่า ลบแถวว่าง
+        if df is not None:
+            df = df.dropna(how="all")
+        
+        # 3. เตรียมข้อมูลใหม่
         new_row = pd.DataFrame({
             "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-            "question": [question],
-            "answer": [answer]
+            "question": [str(question)],
+            "answer": [str(answer)]
         })
         
-        updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+        # 4. รวมข้อมูล
+        # ถ้า Sheet ว่างมากจนไม่มีแม้แต่ Header (Columns) ให้ใช้ข้อมูลใหม่เลย
+        if df is None or df.empty or len(df.columns) < 3:
+            updated_df = new_row
+        else:
+            # บังคับให้หัวข้อคอลัมน์ตรงกันก่อนรวม
+            new_row.columns = df.columns[:3] if len(df.columns) >= 3 else ["timestamp", "question", "answer"]
+            updated_df = pd.concat([df, new_row], ignore_index=True)
+        
+        # 5. อัปเดตกลับไปที่ Sheet1
+        # เพิ่มการระบุ worksheet="Sheet1" ให้ชัดเจนในขั้นตอนเขียน
         conn.update(worksheet="Sheet1", data=updated_df)
+        
     except Exception as e:
         st.error(f"⚠️ บันทึก Log ไม่สำเร็จ: {e}")
 
