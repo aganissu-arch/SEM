@@ -4,11 +4,11 @@ import os
 import pandas as pd
 from datetime import datetime
 
-# --- 1. ตั้งค่าตัวแปร Global ---
+# --- 1. การตั้งค่าเบื้องต้น ---
 LOG_FILE = "chat_logs.csv"
 KNOWLEDGE_DIR = "knowledge_base"
 
-# --- 2. การตั้งค่า API และระบบเลือก Model อัตโนมัติ ---
+# --- 2. ระบบจัดการ API และเลือก Model อัจฉริยะ ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
@@ -16,35 +16,35 @@ else:
     st.stop()
 
 @st.cache_resource
-def get_best_model():
+def get_working_model():
     """
-    ฟังก์ชันอัจฉริยะ: ตรวจสอบว่า API ของคุณมองเห็น Model รุ่นไหนบ้าง 
-    และเลือกตัวที่ดีที่สุด (1.5 Flash) เพื่อเลี่ยง Error 404
+    ฟังก์ชันตรวจสอบ Model ที่ใช้งานได้จริงในระบบ 
+    เพื่อป้องกัน Error 404 จาก Library เวอร์ชันเก่า
     """
     try:
-        # ดึงรายชื่อ Model ทั้งหมดที่ Key นี้เข้าถึงได้
-        available_models = [m.name for m in genai.list_models()]
+        # พยายามดึงรายชื่อ Model ที่ API ของคุณเข้าถึงได้
+        models_in_system = [m.name for m in genai.list_models()]
         
-        # ลำดับความสำคัญ (เน้น 1.5 Flash เพื่อ Quota 1,500 ครั้ง/วัน)
-        priority_list = [
+        # ลำดับความสำคัญ: 1.5 Flash (โควต้าเยอะ) -> 1.0 Pro (ตัวสำรอง)
+        priority_targets = [
             'models/gemini-1.5-flash',
             'models/gemini-1.5-flash-latest',
-            'models/gemini-1.0-pro'  # ตัวสำรองสุดท้าย
+            'models/gemini-1.0-pro'
         ]
         
-        for target in priority_list:
-            if target in available_models:
+        for target in priority_targets:
+            if target in models_in_system:
                 return genai.GenerativeModel(target), target
         
-        # ถ้าไม่เจอใน List เลย ให้ลองเรียกแบบ Default
-        return genai.GenerativeModel('gemini-1.5-flash'), 'gemini-1.5-flash (default)'
+        # หากไม่พบในลิสต์เลย (Library อาจจะเก่า) ให้ลองเรียกชื่อสั้น
+        return genai.GenerativeModel('gemini-1.5-flash'), 'gemini-1.5-flash (attempt)'
         
-    except Exception as e:
-        # กรณี List ไม่ได้ (เช่น Library เก่า) ให้ลองเรียกตรงๆ
-        return genai.GenerativeModel('gemini-1.5-flash'), 'gemini-1.5-flash (manual)'
+    except Exception:
+        # กรณีสุดท้ายถ้า Error หนัก ให้ใช้ชื่อพื้นฐานที่สุดที่ Lib ทุกรุ่นรู้จัก
+        return genai.GenerativeModel('gemini-pro'), 'gemini-pro (legacy mode)'
 
-# --- 3. ฟังก์ชันบันทึก Log ลงไฟล์ CSV ---
-def save_log_to_csv(question, answer):
+# --- 3. ฟังก์ชันบันทึกข้อมูล (Log) ---
+def save_log(question, answer):
     try:
         new_row = pd.DataFrame({
             "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
@@ -58,85 +58,80 @@ def save_log_to_csv(question, answer):
     except Exception:
         pass
 
-# --- 4. ฟังก์ชันโหลดความรู้จากโฟลเดอร์ ---
+# --- 4. ฟังก์ชันโหลดฐานข้อมูลความรู้ ---
 @st.cache_data
-def load_knowledge_base():
-    path = KNOWLEDGE_DIR
-    combined_content = ""
-    if not os.path.exists(path):
+def load_context():
+    if not os.path.exists(KNOWLEDGE_DIR):
         return None
     try:
-        files = sorted([f for f in os.listdir(path) if f.endswith(".txt")])
-        if not files:
-            return None
-        for filename in files:
-            with open(os.path.join(path, filename), 'r', encoding='utf-8') as f:
+        files = [f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt")]
+        if not files: return None
+        
+        full_text = ""
+        for f_name in sorted(files):
+            with open(os.path.join(KNOWLEDGE_DIR, f_name), 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if content:
-                    combined_content += f"\n\n--- Source: {filename} ---\n{content}\n"
-        return combined_content
+                    full_text += f"\n\n--- Source: {f_name} ---\n{content}\n"
+        return full_text
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการโหลดฐานข้อมูล: {e}")
+        st.error(f"Error loading knowledge: {e}")
         return None
 
-# --- 5. หน้าจอ UI หลัก ---
-st.set_page_config(page_title="FE-SEM Assistant", page_icon="🔬", layout="wide")
+# --- 5. การแสดงผลหน้าจอ (UI) ---
+st.set_page_config(page_title="FE-SEM Assistant", page_icon="🔬", layout="centered")
 
-# ส่วนของ Sidebar สำหรับ Admin
 with st.sidebar:
-    st.header("⚙️ Admin Panel")
-    if st.checkbox("ดูประวัติการถาม (Log)"):
-        pwd = st.text_input("รหัสผ่าน", type="password")
-        if pwd == "admin123":
+    st.header("⚙️ สำหรับผู้ดูแล")
+    if st.checkbox("ดูประวัติการแชท (Admin Only)"):
+        pw = st.text_input("รหัสผ่าน", type="password")
+        if pw == "admin123":
             if os.path.exists(LOG_FILE):
-                df_log = pd.read_csv(LOG_FILE)
-                st.dataframe(df_log.tail(10), use_container_width=True)
-                csv_data = df_log.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 Download Log CSV", csv_data, "chat_logs.csv", "text/csv")
+                df = pd.read_csv(LOG_FILE)
+                st.dataframe(df.tail(10))
+                st.download_button("📥 โหลด Log ทั้งหมด", df.to_csv(index=False).encode('utf-8-sig'), "logs.csv")
             else:
-                st.info("ยังไม่มีข้อมูลบันทึก")
+                st.info("ยังไม่มีประวัติ")
 
-st.title("🔬 FE-SEM (Tescan MIRA4) Assistant")
-st.markdown("สวัสดีครับ! ผมคือ AI ผู้ช่วยประจำห้อง Lab FE-SEM มข. สอบถามข้อมูลได้เลยครับ")
+st.title("🔬 FE-SEM Assistant")
+st.caption("ระบบตอบคำถามอัตโนมัติ (MIRA4) มหาวิทยาลัยขอนแก่น")
 st.markdown("---")
 
-# โหลดฐานข้อมูลความรู้
-knowledge_context = load_knowledge_base()
+# โหลดฐานข้อมูล
+context = load_context()
 
-# ส่วนรับคำถาม
-if prompt := st.chat_input("พิมพ์คำถามของคุณที่นี่... (เช่น ค่าบริการเท่าไหร่, จองเครื่องยังไง)"):
+# ส่วนการแชท
+if prompt := st.chat_input("สอบถามเรื่องการจองเครื่อง, ค่าบริการ หรือการเตรียมตัวอย่าง..."):
     st.chat_message("user").markdown(prompt)
 
     with st.chat_message("assistant"):
-        if not knowledge_context:
-            st.error("❌ ไม่พบข้อมูลในโฟลเดอร์ knowledge_base กรุณาตรวจสอบไฟล์ .txt")
+        if not context:
+            st.error("❌ ไม่พบไฟล์ข้อมูลในโฟลเดอร์ knowledge_base")
         else:
-            with st.spinner("กำลังค้นหาคำตอบจากฐานข้อมูล..."):
-                # ดึง Model ที่ดีที่สุดมาใช้งาน
-                model, model_name = get_best_model()
+            with st.spinner("กำลังประมวลผลคำตอบ..."):
+                model, model_used = get_working_model()
                 
                 if model:
-                    # แสดงชื่อรุ่นที่ระบบเลือกใช้จริง (ช่วยในการ Debug)
-                    st.caption(f"🤖 Active Model: {model_name}")
+                    # แสดงชื่อรุ่นที่จับได้จริงเพื่อความโปร่งใส
+                    st.caption(f"🤖 ระบบกำลังใช้รุ่น: {model_used}")
                     
-                    system_prompt = f"""คุณคือ AI ผู้ช่วยห้อง Lab FE-SEM (Tescan MIRA4) 
-ตอบคำถามโดยใช้ข้อมูลอ้างอิงด้านล่างนี้เท่านั้น 
-หากไม่มีข้อมูลในฐานข้อมูล ให้ตอบว่า "ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658"
-
-ข้อมูลอ้างอิง:
-{knowledge_context}
-"""
+                    system_instruction = f"""คุณคือ AI ผู้ช่วยห้อง Lab FE-SEM 
+                    ตอบคำถามโดยใช้ข้อมูลที่ให้มานี้เท่านั้น:
+                    {context}
+                    
+                    หากไม่มีในข้อมูล ให้ตอบว่า: 'ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658'"""
+                    
                     try:
-                        response = model.generate_content([system_prompt, prompt])
+                        response = model.generate_content([system_instruction, prompt])
                         answer = response.text
                         st.markdown(answer)
-                        save_log_to_csv(prompt, answer)
+                        save_log(prompt, answer)
                     except Exception as e:
                         if "429" in str(e):
-                            st.error("⚠️ โควต้าการถามชั่วคราวเต็ม (Rate Limit) กรุณารอ 1 นาทีแล้วลองใหม่ครับ")
+                            st.error("⚠️ โควต้าชั่วคราวเต็ม (Rate Limit) กรุณารอ 1 นาทีแล้วลองใหม่ครับ")
                         elif "404" in str(e):
-                            st.error(f"❌ ระบบไม่พบรุ่น {model_name} (404) กรุณาตรวจสอบ Library Version")
+                            st.error("❌ ไม่พบ Model ในระบบ (404) กรุณากด Reboot App ในหน้า Streamlit Cloud")
                         else:
                             st.error(f"เกิดข้อผิดพลาด: {e}")
                 else:
-                    st.error("❌ ไม่สามารถเชื่อมต่อกับ Gemini API ได้")
+                    st.error("❌ ไม่สามารถเชื่อมต่อกับ AI ได้")
