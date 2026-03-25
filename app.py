@@ -43,32 +43,32 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_log_to_gsheets(question, answer):
     try:
-        # 1. อ่านข้อมูลจากหน้าแรก (Index 0) แทนการระบุชื่อ เพื่อป้องกันปัญหาชื่อ Sheet1 ไม่ตรง
-        # หรือจะระบุ worksheet="Sheet1" ก็ได้แต่ต้องมั่นใจว่าใน Google Sheets ชื่อตรงกันเป๊ะ
+        # 1. อ่านข้อมูลโดยไม่ระบุชื่อ Worksheet (เพื่อให้ระบบเลือกหน้าแรกอัตโนมัติ)
+        # วิธีนี้จะช่วยลดปัญหา 404 หากชื่อ Sheet1 มีการเว้นวรรคหรือพิมพ์ผิด
         df = conn.read(ttl=0) 
         
-        # 2. จัดการข้อมูลเก่า ลบแถวว่าง
+        # 2. จัดการข้อมูลเก่า (ลบแถวที่ว่างเปล่า)
         if df is not None:
             df = df.dropna(how="all")
         
-        # 3. เตรียมข้อมูลใหม่
+        # 3. เตรียมข้อมูลแถวใหม่
         new_row = pd.DataFrame({
             "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
             "question": [str(question)],
             "answer": [str(answer)]
         })
         
-        # 4. รวมข้อมูล
-        # ถ้า Sheet ว่างมากจนไม่มีแม้แต่ Header (Columns) ให้ใช้ข้อมูลใหม่เลย
-        if df is None or df.empty or len(df.columns) < 3:
+        # 4. รวมข้อมูลเข้าด้วยกัน
+        # กรณี Sheet ว่างเปล่า (ไม่มี Header) ให้ใช้ข้อมูลใหม่เป็นตัวตั้งต้น
+        if df is None or df.empty:
             updated_df = new_row
         else:
-            # บังคับให้หัวข้อคอลัมน์ตรงกันก่อนรวม
+            # พยายามทำให้หัวข้อคอลัมน์ตรงกันก่อนรวม
             new_row.columns = df.columns[:3] if len(df.columns) >= 3 else ["timestamp", "question", "answer"]
             updated_df = pd.concat([df, new_row], ignore_index=True)
         
-        # 5. อัปเดตกลับไปที่ Sheet1
-        # เพิ่มการระบุ worksheet="Sheet1" ให้ชัดเจนในขั้นตอนเขียน
+        # 5. อัปเดตกลับไปยัง Google Sheets
+        # ระบุชื่อ worksheet ให้ชัดเจน (ตรวจสอบในไฟล์จริงว่าชื่อ Sheet1 หรือไม่)
         conn.update(worksheet="Sheet1", data=updated_df)
         
     except Exception as e:
