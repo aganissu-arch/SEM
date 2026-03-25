@@ -8,25 +8,36 @@ from datetime import datetime
 LOG_FILE = "chat_logs.csv"
 KNOWLEDGE_DIR = "knowledge_base"
 
-# --- 2. การตั้งค่า API และ Model ---
+# --- 2. การตั้งค่า API และ Model (ปรับปรุงเพื่อแก้ 404) ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
     st.error("❌ ไม่พบ API Key ใน Secrets")
     st.stop()
 
-# แก้ไข: ใส่ models/ นำหน้าชื่อรุ่นเพื่อป้องกัน Error 404
-# และใช้ gemini-1.5-flash เพื่อให้ได้ Quota ฟรี 1,500 ครั้ง/วัน
-ACTIVE_MODEL_NAME = 'models/gemini-1.5-flash' 
-
 def get_model():
-    """ดึง Model รุ่นที่ระบุไว้มาใช้งานโดยตรง"""
+    """ดึง Model โดยรองรับทั้ง Library เวอร์ชันเก่าและใหม่"""
+    # รายชื่อรุ่นที่โควต้าเยอะ (1.5 Flash) ลองเรียกทุกรูปแบบที่ระบบอาจจะรู้จัก
+    test_models = [
+        'gemini-1.5-flash',
+        'models/gemini-1.5-flash',
+        'gemini-1.5-flash-latest'
+    ]
+    
+    for model_name in test_models:
+        try:
+            # พยายามสร้าง Model
+            m = genai.GenerativeModel(model_name)
+            # ทดสอบเรียกดูชื่อ (ถ้าเรียกได้แสดงว่า Model นี้มีตัวตนใน Library นี้)
+            if m: return m, model_name
+        except Exception:
+            continue
+            
+    # กรณีสุดท้าย: ถ้า Library เก่ามากจนไม่รู้จัก 1.5 เลย ให้ถอยไปใช้ 1.0 Pro
     try:
-        # ระบุชื่อรุ่นแบบเต็มผ่านพารามิเตอร์ model_name
-        return genai.GenerativeModel(model_name=ACTIVE_MODEL_NAME)
-    except Exception as e:
-        st.error(f"⚠️ ไม่สามารถโหลด Model {ACTIVE_MODEL_NAME} ได้: {e}")
-        return None
+        return genai.GenerativeModel('gemini-pro'), 'gemini-pro'
+    except:
+        return None, None
 
 # --- 3. ฟังก์ชันบันทึก Log ลงไฟล์ CSV ---
 def save_log_to_csv(question, answer):
@@ -48,15 +59,10 @@ def save_log_to_csv(question, answer):
 def load_knowledge_base():
     path = KNOWLEDGE_DIR
     combined_content = ""
-    if not os.path.exists(path): 
-        return None
-    
-    # อ่านไฟล์ .txt ทั้งหมดในโฟลเดอร์มาต่อกัน
+    if not os.path.exists(path): return None
     try:
         files = sorted([f for f in os.listdir(path) if f.endswith(".txt")])
-        if not files: 
-            return None
-        
+        if not files: return None
         for filename in files:
             with open(os.path.join(path, filename), 'r', encoding='utf-8') as f:
                 content = f.read().strip()
@@ -69,9 +75,10 @@ def load_knowledge_base():
 
 knowledge_context = load_knowledge_base()
 
-# --- 5. หน้าจอ UI และ Sidebar ---
+# --- 5. หน้าจอ UI ---
 st.set_page_config(page_title="FE-SEM Assistant", page_icon="🔬")
 
+# ส่วนของ Sidebar
 with st.sidebar:
     st.header("⚙️ สำหรับผู้ดูแลระบบ")
     if st.checkbox("เปิดโหมดดู Log"):
@@ -81,59 +88,43 @@ with st.sidebar:
                 df_log = pd.read_csv(LOG_FILE)
                 st.write("รายการคำถามล่าสุด:")
                 st.dataframe(df_log.tail(10))
-                
                 csv_data = df_log.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 ดาวน์โหลด Log (CSV)", 
-                    data=csv_data, 
-                    file_name=f"logs_{datetime.now().strftime('%Y%m%d')}.csv", 
-                    mime="text/csv"
-                )
-            else:
-                st.info("ยังไม่มีข้อมูลบันทึก")
+                st.download_button("📥 ดาวน์โหลด Log", csv_data, f"logs.csv", "text/csv")
 
 st.title("🔬 FE-SEM (Tescan MIRA4) Assistant")
 st.caption("ระบบตอบคำถามอัตโนมัติจากฐานข้อมูลห้องปฏิบัติการ")
 st.markdown("---")
 
-# ส่วนรับคำถามจากผู้ใช้
 if prompt := st.chat_input("สอบถามเรื่องการจองเครื่อง หรือ การเตรียมตัวอย่าง..."):
     st.chat_message("user").markdown(prompt)
 
     with st.chat_message("assistant"):
         if knowledge_context:
             with st.spinner("AI กำลังวิเคราะห์คำตอบ..."):
-                model = get_model()
+                # ดึง Model และชื่อรุ่นที่ใช้งานได้จริงมา
+                model, actual_name = get_model()
                 
                 if model:
-                    # แสดงชื่อรุ่นที่ใช้งานจริงเพื่อให้ตรวจสอบได้ง่าย
-                    st.caption(f"🤖 กำลังใช้งานรุ่น: {ACTIVE_MODEL_NAME}")
+                    st.caption(f"🤖 กำลังใช้งานรุ่น: {actual_name}")
                     
                     system_prompt = f"""คุณคือผู้ช่วยห้อง Lab FE-SEM (Tescan MIRA4) 
-ทำหน้าที่ตอบคำถามลูกค้าโดยใช้ข้อมูลอ้างอิงที่ให้มาเท่านั้น
-หากไม่มีข้อมูลในฐานข้อมูล ให้บอกว่า "ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658"
+ตอบคำถามลูกค้าโดยใช้ข้อมูลอ้างอิงที่ให้มาเท่านั้น หากไม่มีให้บอกว่า 
+"ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658"
 
 ข้อมูลอ้างอิง:
-{knowledge_context}
-"""
+{knowledge_context}"""
                     
                     try:
-                        # เรียกใช้การสร้างคำตอบ
                         response = model.generate_content([system_prompt, prompt])
                         answer = response.text
-                        
                         st.markdown(answer)
                         save_log_to_csv(prompt, answer)
-                        
                     except Exception as e:
-                        error_msg = str(e)
-                        if "429" in error_msg:
-                            st.error("⚠️ โควต้าชั่วคราวเต็ม (Rate Limit) กรุณารอ 1 นาทีแล้วลองใหม่ครับ")
-                        elif "404" in error_msg:
-                            st.error("❌ ไม่พบ Model ในระบบ (404) กรุณาตรวจสอบการระบุชื่อรุ่นในโค้ด")
+                        if "429" in str(e):
+                            st.error("⚠️ โควต้าชั่วคราวเต็ม กรุณารอ 1 นาทีครับ")
                         else:
-                            st.error(f"เกิดข้อผิดพลาดในการสร้างคำตอบ: {e}")
+                            st.error(f"เกิดข้อผิดพลาด: {e}")
                 else:
-                    st.error("❌ ไม่พบ Model ที่พร้อมใช้งาน")
+                    st.error("❌ ไม่พบ Model ที่พร้อมใช้งานใน Library นี้")
         else:
-            st.error("❌ ไม่พบข้อมูลในโฟลเดอร์ knowledge_base หรือไฟล์ว่างเปล่า")
+            st.error("❌ ไม่พบข้อมูลใน knowledge_base")
