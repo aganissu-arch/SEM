@@ -18,30 +18,39 @@ else:
 @st.cache_resource
 def get_working_model():
     """
-    ฟังก์ชันตรวจสอบ Model ที่ใช้งานได้จริงในระบบ 
-    เพื่อป้องกัน Error 404 จาก Library เวอร์ชันเก่า
+    ดึง Model โดยการเช็คจากสิ่งที่ Google อนุญาตให้ใช้จริง ณ ขณะนั้น
     """
     try:
-        # พยายามดึงรายชื่อ Model ที่ API ของคุณเข้าถึงได้
-        models_in_system = [m.name for m in genai.list_models()]
+        # 1. ถาม Google ว่า Key นี้มองเห็นรุ่นอะไรบ้าง
+        available_models = [m.name for m in genai.list_models() 
+                           if 'generateContent' in m.supported_generation_methods]
         
-        # ลำดับความสำคัญ: 1.5 Flash (โควต้าเยอะ) -> 1.0 Pro (ตัวสำรอง)
-        priority_targets = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.0-pro'
+        # 2. รายชื่อที่เราอยากได้ (เรียงจากดีไปหาพอใช้)
+        # หมายเหตุ: API บางตัวอาจจะคืนค่ามาเป็น 'models/gemini-1.5-flash' 
+        # หรือแค่ 'gemini-1.5-flash' เราจะเช็คทั้งคู่
+        targets = [
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+            'gemini-1.0-pro'
         ]
         
-        for target in priority_targets:
-            if target in models_in_system:
-                return genai.GenerativeModel(target), target
+        for t in targets:
+            # ตรวจสอบชื่อรุ่นทั้งแบบมี models/ และไม่มี
+            full_name = f"models/{t}"
+            if full_name in available_models:
+                return genai.GenerativeModel(model_name=full_name), full_name
+            if t in available_models:
+                return genai.GenerativeModel(model_name=t), t
         
-        # หากไม่พบในลิสต์เลย (Library อาจจะเก่า) ให้ลองเรียกชื่อสั้น
-        return genai.GenerativeModel('gemini-1.5-flash'), 'gemini-1.5-flash (attempt)'
-        
-    except Exception:
-        # กรณีสุดท้ายถ้า Error หนัก ให้ใช้ชื่อพื้นฐานที่สุดที่ Lib ทุกรุ่นรู้จัก
-        return genai.GenerativeModel('gemini-pro'), 'gemini-pro (legacy mode)'
+        # 3. ถ้าหาในลิสต์ไม่เจอเลย ให้หยิบตัวแรกที่ 'generateContent' ได้มาเลย (กันพลาด)
+        if available_models:
+            return genai.GenerativeModel(available_models[0]), available_models[0]
+            
+    except Exception as e:
+        # ถ้า Lib เก่าจน list_models ไม่ได้ ให้ใช้ชื่อรุ่นมาตรฐานที่สุด
+        return genai.GenerativeModel('gemini-pro'), f'gemini-pro (legacy error: {str(e)[:20]})'
+    
+    return None, None
 
 # --- 3. ฟังก์ชันบันทึกข้อมูล (Log) ---
 def save_log(question, answer):
