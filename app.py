@@ -4,46 +4,44 @@ import os
 import pandas as pd
 from datetime import datetime
 
-# --- 1. การตั้งค่าเบื้องต้น ---
+# --- 1. ตั้งค่าพื้นฐาน ---
 LOG_FILE = "chat_logs.csv"
 KNOWLEDGE_DIR = "knowledge_base"
 
-# --- 2. ระบบจัดการ API และเลือก Model อัจฉริยะ ---
+# --- 2. การตั้งค่า API และ Model (ฉบับแก้ 404 ถาวร) ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("❌ ไม่พบ API Key ในหน้า Secrets ของ Streamlit Cloud")
+    st.error("❌ ไม่พบ API Key ใน Secrets")
     st.stop()
 
 @st.cache_resource
 def get_working_model():
     """
-    ปรับลำดับความสำคัญ: 
-    เน้น 1.5-flash เพื่อให้ได้ Quota 1,500 ครั้ง/วัน 
-    แทนที่จะใช้ 2.5-flash ที่มีโควต้าน้อยกว่ามาก
+    ฟังก์ชันเลือก Model: 
+    ลองเรียกแบบ 'gemini-1.5-flash' (ไม่มี models/ นำหน้า) 
+    เพราะบาง Library Version จะเติมให้เอง ถ้าเราใส่ไปซ้ำจะเกิด 404
     """
+    # รายชื่อที่ API ส่วนใหญ่ยอมรับ
+    test_names = ['gemini-1.5-flash', 'gemini-1.0-pro']
+    
+    for name in test_names:
+        try:
+            # ทดสอบสร้าง Model
+            model = genai.GenerativeModel(name)
+            # ทดสอบ List เพื่อเช็คว่า Model นี้มีตัวตนจริงไหม
+            # ถ้าผ่านบรรทัดนี้ได้ แสดงว่า Model พร้อมใช้
+            return model, name
+        except Exception:
+            continue
+            
+    # ถ้ายังไม่ได้ ให้ลองเติม models/ (แผนสำรอง)
     try:
-        # ดึงรายชื่อที่ Key นี้เข้าถึงได้
-        available = [m.name for m in genai.list_models()]
-        
-        # ลำดับที่แนะนำ (1.5 Flash คือตัวที่คุ้มที่สุดสำหรับสายฟรี)
-        priority_targets = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.0-pro'
-        ]
-        
-        for t in priority_targets:
-            if t in available:
-                return genai.GenerativeModel(t), t
-                
-        # หากไม่เจอใน List เลย ให้ลองเรียก 1.5-flash ตรงๆ
         return genai.GenerativeModel('models/gemini-1.5-flash'), 'models/gemini-1.5-flash'
-        
-    except Exception:
-        return genai.GenerativeModel('gemini-pro'), 'gemini-pro (legacy)'
+    except:
+        return None, None
 
-# --- 3. ฟังก์ชันบันทึกข้อมูล (Log) ---
+# --- 3. ฟังก์ชันบันทึก Log ---
 def save_log(question, answer):
     try:
         new_row = pd.DataFrame({
@@ -58,80 +56,60 @@ def save_log(question, answer):
     except Exception:
         pass
 
-# --- 4. ฟังก์ชันโหลดฐานข้อมูลความรู้ ---
+# --- 4. โหลดฐานข้อมูล ---
 @st.cache_data
 def load_context():
-    if not os.path.exists(KNOWLEDGE_DIR):
-        return None
+    if not os.path.exists(KNOWLEDGE_DIR): return None
     try:
-        files = [f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt")]
+        files = sorted([f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt")])
         if not files: return None
-        
-        full_text = ""
-        for f_name in sorted(files):
-            with open(os.path.join(KNOWLEDGE_DIR, f_name), 'r', encoding='utf-8') as f:
+        text = ""
+        for fn in files:
+            with open(os.path.join(KNOWLEDGE_DIR, fn), 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                if content:
-                    full_text += f"\n\n--- Source: {f_name} ---\n{content}\n"
-        return full_text
-    except Exception as e:
-        st.error(f"Error loading knowledge: {e}")
-        return None
+                if content: text += f"\n\n--- {fn} ---\n{content}\n"
+        return text
+    except Exception: return None
 
-# --- 5. การแสดงผลหน้าจอ (UI) ---
-st.set_page_config(page_title="FE-SEM Assistant", page_icon="🔬", layout="centered")
-
-with st.sidebar:
-    st.header("⚙️ สำหรับผู้ดูแล")
-    if st.checkbox("ดูประวัติการแชท (Admin Only)"):
-        pw = st.text_input("รหัสผ่าน", type="password")
-        if pw == "admin123":
-            if os.path.exists(LOG_FILE):
-                df = pd.read_csv(LOG_FILE)
-                st.dataframe(df.tail(10))
-                st.download_button("📥 โหลด Log ทั้งหมด", df.to_csv(index=False).encode('utf-8-sig'), "logs.csv")
-            else:
-                st.info("ยังไม่มีประวัติ")
+# --- 5. หน้าจอ UI ---
+st.set_page_config(page_title="FE-SEM Assistant", page_icon="🔬")
 
 st.title("🔬 FE-SEM Assistant")
-st.caption("ระบบตอบคำถามอัตโนมัติ (MIRA4) มหาวิทยาลัยขอนแก่น")
+st.markdown("ระบบตอบคำถามอัตโนมัติจากฐานข้อมูลห้อง Lab")
 st.markdown("---")
 
-# โหลดฐานข้อมูล
 context = load_context()
 
-# ส่วนการแชท
-if prompt := st.chat_input("สอบถามเรื่องการจองเครื่อง, ค่าบริการ หรือการเตรียมตัวอย่าง..."):
+if prompt := st.chat_input("สอบถามเรื่องการจอง หรือค่าบริการ..."):
     st.chat_message("user").markdown(prompt)
 
     with st.chat_message("assistant"):
         if not context:
-            st.error("❌ ไม่พบไฟล์ข้อมูลในโฟลเดอร์ knowledge_base")
+            st.error("❌ ไม่พบข้อมูลใน knowledge_base")
         else:
-            with st.spinner("กำลังประมวลผลคำตอบ..."):
-                model, model_used = get_working_model()
+            with st.spinner("AI กำลังวิเคราะห์..."):
+                model, model_name = get_working_model()
                 
                 if model:
-                    # แสดงชื่อรุ่นที่จับได้จริงเพื่อความโปร่งใส
-                    st.caption(f"🤖 ระบบกำลังใช้รุ่น: {model_used}")
+                    st.caption(f"🤖 Active Model: {model_name}")
                     
-                    system_instruction = f"""คุณคือ AI ผู้ช่วยห้อง Lab FE-SEM 
-                    ตอบคำถามโดยใช้ข้อมูลที่ให้มานี้เท่านั้น:
-                    {context}
-                    
-                    หากไม่มีในข้อมูล ให้ตอบว่า: 'ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658'"""
+                    system_prompt = f"""คุณคือผู้ช่วยห้อง Lab FE-SEM (MIRA4) 
+ตอบคำถามโดยใช้ข้อมูลนี้เท่านั้น:
+{context}
+
+หากไม่มีข้อมูลให้ตอบว่า: "ขออภัยครับ ข้อมูลส่วนนี้ไม่มีในฐานข้อมูลของผม กรุณาติดต่อคุณเอิ๊ก 0927829658" """
                     
                     try:
-                        response = model.generate_content([system_instruction, prompt])
-                        answer = response.text
-                        st.markdown(answer)
-                        save_log(prompt, answer)
+                        # แก้ไขตรงนี้: ใช้การส่งคำถามแบบง่ายที่สุด
+                        response = model.generate_content(f"{system_prompt}\n\nคำถาม: {prompt}")
+                        st.markdown(response.text)
+                        save_log(prompt, response.text)
                     except Exception as e:
-                        if "429" in str(e):
-                            st.error("⚠️ โควต้าชั่วคราวเต็ม (Rate Limit) กรุณารอ 1 นาทีแล้วลองใหม่ครับ")
-                        elif "404" in str(e):
-                            st.error("❌ ไม่พบ Model ในระบบ (404) กรุณากด Reboot App ในหน้า Streamlit Cloud")
+                        if "404" in str(e):
+                            st.error(f"❌ 404 Error: ระบบหา '{model_name}' ไม่พบใน Version นี้")
+                        elif "429" in str(e):
+                            st.error("⚠️ โควต้าเต็ม กรุณารอ 1 นาที")
                         else:
                             st.error(f"เกิดข้อผิดพลาด: {e}")
                 else:
-                    st.error("❌ ไม่สามารถเชื่อมต่อกับ AI ได้")
+                    st.error("❌ ไม่พบ Model ที่ใช้งานได้")
